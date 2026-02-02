@@ -1,0 +1,69 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww21660\viewh12080\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 sessionInfo()\
+```\
+\
+R version 4.5.2 (2025-10-31)\
+Platform: x86_64-apple-darwin20\
+Running under: macOS Sequoia 15.7.2\
+\
+Matrix products: default\
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib \
+LAPACK: /Library/Frameworks/R.framework/Versions/4.5-x86_64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.1\
+\
+locale:\
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8\
+\
+time zone: Europe/Paris\
+tzcode source: internal\
+\
+attached base packages:\
+[1] stats4    stats     graphics  grDevices utils     datasets  methods   base     \
+\
+other attached packages:\
+ [1] RColorBrewer_1.1-3          pathviewr_1.1.8             enrichplot_1.30.4          \
+ [4] clusterProfiler_4.18.3      lubridate_1.9.4             forcats_1.0.1              \
+ [7] stringr_1.6.0               purrr_1.2.0                 tidyr_1.3.1                \
+[10] tibble_3.3.0                tidyverse_2.0.0             EnhancedVolcano_1.28.2     \
+[13] ggrepel_0.9.6               ggplot2_4.0.1               pheatmap_1.0.13            \
+[16] apeglm_1.32.0               DESeq2_1.50.2               SummarizedExperiment_1.40.0\
+[19] Biobase_2.70.0              MatrixGenerics_1.22.0       matrixStats_1.5.0          \
+[22] GenomicRanges_1.62.1        Seqinfo_1.0.0               IRanges_2.44.0             \
+[25] S4Vectors_0.48.0            BiocGenerics_0.56.0         generics_0.1.4             \
+[28] readr_2.1.6                 dplyr_1.1.4                \
+\
+loaded via a namespace (and not attached):\
+  [1] rstudioapi_0.17.1       jsonlite_2.0.0          tidydr_0.0.6            magrittr_2.0.4         \
+  [5] ggtangle_0.0.9          farver_2.1.2            rmarkdown_2.30          ragg_1.5.0             \
+  [9] fs_1.6.6                vctrs_0.6.5             memoise_2.0.1           ggtree_4.0.1           \
+ [13] htmltools_0.5.9         S4Arrays_1.10.1         SparseArray_1.10.6      gridGraphics_0.5-1     \
+ [17] htmlwidgets_1.6.4       plyr_1.8.9              cachem_1.1.0            igraph_2.2.1           \
+ [21] lifecycle_1.0.4         pkgconfig_2.0.3         gson_0.1.0              Matrix_1.7-4           \
+ [25] R6_2.6.1                fastmap_1.2.0           digest_0.6.39           numDeriv_2016.8-1.1    \
+ [29] aplot_0.2.9             ggnewscale_0.5.2        patchwork_1.3.2         AnnotationDbi_1.72.0   \
+ [33] textshaping_1.0.4       RSQLite_2.4.5           labeling_0.4.3          timechange_0.3.0       \
+ [37] polyclip_1.10-7         httr_1.4.7              abind_1.4-8             compiler_4.5.2         \
+ [41] bit64_4.6.0-1           fontquiver_0.2.1        withr_3.0.2             S7_0.2.1               \
+ [45] BiocParallel_1.44.0     DBI_1.2.3               ggforce_0.5.0           R.utils_2.13.0         \
+ [49] MASS_7.3-65             rappdirs_0.3.3          DelayedArray_0.36.0     tools_4.5.2            \
+ [53] scatterpie_0.2.6        ape_5.8-1               R.oo_1.27.1             glue_1.8.0             \
+ [57] nlme_3.1-168            GOSemSim_2.36.0         grid_4.5.2              cluster_2.1.8.1        \
+ [61] reshape2_1.4.5          fgsea_1.36.0            gtable_0.3.6            tzdb_0.5.0             \
+ [65] R.methodsS3_1.8.2       data.table_1.17.8       hms_1.1.4               XVector_0.50.0         \
+ [69] pillar_1.11.1           vroom_1.6.7             yulab.utils_0.2.3       emdbook_1.3.14         \
+ [73] splines_4.5.2           tweenr_2.0.3            treeio_1.34.0           lattice_0.22-7         \
+ [77] bit_4.6.0               tidyselect_1.2.1        fontLiberation_0.1.0    GO.db_3.22.0           \
+ [81] locfit_1.5-9.12         Biostrings_2.78.0       knitr_1.50              fontBitstreamVera_0.1.1\
+ [85] xfun_0.55               stringi_1.8.7           lazyeval_0.2.2          ggfun_0.2.0            \
+ [89] yaml_2.3.12             evaluate_1.0.5          codetools_0.2-20        bbmle_1.0.25.1         \
+ [93] gdtools_0.4.4           qvalue_2.42.0           BiocManager_1.30.27     ggplotify_0.1.3        \
+ [97] cli_3.6.5               systemfonts_1.3.1       Rcpp_1.1.0              coda_0.19-4.1          \
+[101] png_0.1-8               bdsmatrix_1.3-7         parallel_4.5.2          blob_1.2.4             \
+[105] DOSE_4.4.0              mvtnorm_1.3-3           tidytree_0.4.6          ggiraph_0.9.2          \
+[109] scales_1.4.0            crayon_1.5.3            rlang_1.1.6             cowplot_1.2.0          \
+[113] fastmatch_1.1-6         KEGGREST_1.50.0 }
