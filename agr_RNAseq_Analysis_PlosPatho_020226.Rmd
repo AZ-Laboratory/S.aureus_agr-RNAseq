@@ -1,0 +1,1268 @@
+---
+title: "agr_RNAseq_analysis"
+author: "Mariane Pivard, Julian Baer"
+date: "2026-01-27"
+output: html_document
+---
+### 1.	Install and load necessary packages: 
+```{r, message = FALSE, warning = FALSE, results = "hide"}
+# clean environment
+rm(list = ls())
+message("Environment cleared")
+
+# get directory of that script
+wd=dirname(rstudioapi::getSourceEditorContext()$path)
+
+# Load custom functions and libraries from file
+source("libraries_functions.R")
+message("Required packages successfully loaded")
+
+source("genenames.R")
+if (!requireNamespace("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+library(clusterProfiler)
+library(enrichplot)
+library(pathviewr)
+library(RColorBrewer)
+
+
+```
+
+### 2.	Generate the counts file:
+
+Convert counts .txt files from RNAseq pipeline to csv
+```{r, message = TRUE, warning = FALSE, results = "hide"}
+# only run this part if you want to combine the .txt files into a single .csv file again
+combinefiles = TRUE
+
+if (combinefiles){
+  # Define the path to the folder containing the .txt files
+  path <- paste0(wd, "/Counts")
+  
+  # Get the list of .txt files
+  files <- list.files(path, pattern = "*.txt", full.names = TRUE)
+  message(length(files), " .txt files found in the directory: ", path)
+  
+  # Function to transform .txt files into .csv files
+  transform_txt_to_csv <- function(file) {
+    # Read the .txt file
+    data <- read_delim(file, delim = "\t", skip = 1, show_col_types = FALSE)
+    # Rename the 7th column to "counts"
+    colnames(data)[7] <- "counts"
+    # Extract the file name without the first line and without the extension
+    file_name <- basename(file)
+    file_name <- sub("(_S\\d+.*)", "", file_name)
+    # Save the file as .csv
+    write_csv(data, file.path(path, paste0(file_name, ".csv")))
+  }
+  
+  # Apply the function to all .txt files
+  lapply(files, transform_txt_to_csv)
+  message(length(files), " .csv files have been written.")
+  
+  # Get the list of .csv files
+  csv_files <- list.files(path, pattern = "*.csv", full.names = TRUE)
+  message(length(csv_files), " .csv files found and will be combined.")
+  
+  # Initialize a list to store the data
+  data_list <- list()
+  
+  # Read each .csv file and extract the necessary columns
+  for (file in csv_files) {
+    data <- read_csv(file, show_col_types = FALSE)
+    file_name <- basename(file)
+    file_name <- sub(".csv", "", file_name)
+    # Add the "counts" column with the file name as the column name
+    data_list[[file_name]] <- data %>% 
+      select(Geneid, counts) %>% 
+      rename_with(~ file_name, counts)
+  }
+  
+  # Combine all the data into a single data frame
+  combined_data <- Reduce(function(x, y) full_join(x, y, by = "Geneid"), data_list)
+  # Save the combined file as .csv
+  combined_csv_path <- file.path(wd, "counts_matrix.csv")
+  write_csv(combined_data, combined_csv_path)
+  message("Combined file saved as: ", combined_csv_path)
+}
+```
+
+### 3.	Load count file & metadata file, and formatting:
+
+Here we change the GeneID with Aureowiki annotation. 
+We removed the agr genes (agrABCD and hld) to avoid strong biases in our analysis when comparing to the delta agr strain. 
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Load raw counts
+setwd(wd)
+
+# Load counts matrix
+counts_file_path <- file.path(wd, "counts_matrix.csv")
+message("Loading counts matrix from: ", counts_file_path)
+counts_matrix <- read.csv(counts_file_path, row.names = 1, sep = ',')
+message("Counts matrix successfully loaded with dimensions: ", nrow(counts_matrix), " genes and ", ncol(counts_matrix), " samples.")
+
+# Change "-" into "_" in column names
+colnames(counts_matrix) <- gsub("NM.", "NM_", colnames(counts_matrix))
+message("Column names updated (e.g., replacing `NM.` with `NM_`).")
+
+# Load metadata (sample information)
+metadata_file_path <- file.path(wd, "metadata.csv")
+message("Loading metadata from: ", metadata_file_path)
+metadata <- read.csv(metadata_file_path, sep = ";", row.names = 1, check.names = FALSE)
+
+# Relevel metadata columns 
+metadata$Strain <- factor(metadata$Strain, levels = c("Dagr", "agr-I", "agr-II", "agr-III", "agr-IV"))
+metadata$Time <- factor(metadata$Time, levels = c("1H30", "6H", "12H"))
+metadata$Strain <- relevel(metadata$Strain, ref = "Dagr")
+message("Metadata successfully loaded with ", nrow(metadata), " samples and ", length(unique(metadata$Strain)), 
+        " unique strains: ", paste(levels(metadata$Strain), collapse = ", "), ".")
+message("The samples correspond to ", length(unique(metadata$Time)), " unique time points: ", 
+        paste(levels(metadata$Time), collapse = ", "), ".")
+
+# Change locus_tag by the gene name if unique and known
+name_replacement_file <- "genenamereplacement_aureowiki.csv"
+message("Loading gene name replacement data from: ", name_replacement_file)
+name_replacement <- read.csv(name_replacement_file, stringsAsFactors = FALSE)
+message("Gene name replacement file successfully loaded with ", nrow(name_replacement), " entries.")
+message("Displaying the first few rows of name replacement data for reference:")
+print(head(name_replacement))
+
+# Get current rownames (locus_tag)
+current_locus <- rownames(counts_matrix)
+match_idx <- match(current_locus, name_replacement$locus_tag)
+
+# Find matching gene names and handle duplicates or missing entries
+gene_names <- name_replacement$gene[match_idx]
+duplicated_gene <- gene_names %in% name_replacement$gene[duplicated(name_replacement$gene)]
+new_rownames <- ifelse(is.na(gene_names) | duplicated_gene, current_locus, gene_names)
+message("Gene names have been updated where applicable. Duplicates or missing gene names were replaced with original locus tags.")
+
+# Assign new rownames
+rownames(counts_matrix) <- new_rownames
+
+# Remove agr-locus genes
+agr_genes_to_remove <- c("agrC", "agrB", "agrA", "agrD", "hld", "RNAIII")
+counts_matrix <- counts_matrix[!rownames(counts_matrix) %in% agr_genes_to_remove, ]
+message(length(agr_genes_to_remove), " agr-locus genes removed: ", paste(agr_genes_to_remove, collapse = ", "))
+
+# Convert counts matrix to numeric matrix
+counts_matrix <- as.matrix(counts_matrix)
+message("Counts matrix prepared for further analysis. Final dimensions: ", nrow(counts_matrix), 
+        " genes and ", ncol(counts_matrix), " samples.")
+```
+
+
+### 4.  DESeq2
+
+Construct DESeq2 dataset from raw count matrix and sample metadata.
+The design formula models the main effects of Strain and Time, as well as their interaction (Strain:Time), allowing us to test:
+  - differences between strains
+  - differences across time points
+  - whether the effect of time depends on strain (interaction)
+Wald tests and Benjamini-Hochberg FDR correction were used to identify significantly differentially expressed genes.
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Align metadata
+message("Aligning metadata with counts matrix column names...")
+metadata <- metadata[colnames(counts_matrix), ]
+message("Metadata successfully aligned with counts matrix. Metadata dimensions: ", nrow(metadata), " samples (rows), ", 
+        ncol(metadata), " metadata columns.")
+
+# Run DESeq2 analysis
+message("Setting up DESeq2 dataset with provided counts matrix and metadata...")
+dds <- DESeqDataSetFromMatrix(countData = counts_matrix,
+                              colData = metadata,
+                              design = ~ Strain + Time + Strain:Time) # Interaction model
+message("DESeq2 dataset successfully created with design: ~ Strain + Time + Strain:Time.")
+
+# Run DESeq2 differential expression analysis
+message("Running differential expression analysis using DESeq2...")
+dds <- DESeq(dds)
+message("DESeq2 analysis completed successfully.")
+
+# Check the available result names
+result_names <- resultsNames(dds)
+message("Available result names from DESeq2:")
+print(result_names)
+
+# Save the DESeq2 object to file
+dds_file_path <- paste0(wd, "/dds.rds")
+saveRDS(dds, file = dds_file_path)
+message("DESeq2 object saved to file: ", dds_file_path)
+```
+
+
+### 5.  PCA analysis and data visualization
+
+Perform principal component analysis (PCA) on the variance-stabilized transformed counts to assess sample clustering and detect potential, batch effects or outliers. 
+Only the first two principal components (PC1 and PC2) are used for visualization, as they capture the largest sources of variance.
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Custom plot function for PCA plot
+create_pca_plot <- function(pca_data, percentVar, title, shapes, fill_colors) {
+  ggplot(pca_data, aes(PC1, PC2, fill = Strain, shape = Time)) +
+    geom_point(size = 5, color = "black") +
+    geom_vline(xintercept = 0, color = "black", size = 1) +           # Black full vertical line at x = 0
+    geom_hline(yintercept = 0, color = "darkgray", linetype = "dashed") + # Dark gray dashed horizontal line at y = 0
+    scale_fill_manual(values = fill_colors) +           # Use fill_colors for strain colors
+    scale_shape_manual(values = shapes) +
+    labs(title = title,
+         x = paste0("PC1: ", percentVar[1], "% variance"), 
+         y = paste0("PC2: ", percentVar[2], "% variance")) +
+    theme_poster() +
+    theme(legend.position = "right", 
+          legend.title = element_blank()) +
+    guides(fill = guide_legend(override.aes = list(shape = 22)))
+}
+
+# Perform PCA on all data
+message("Performing PCA for all data...")
+rld <- rlog(dds, blind = FALSE) # Regularized log transformation
+pca_data <- plotPCA(rld, intgroup = c("Strain", "Time"), returnData = TRUE)
+levels(pca_data$Strain) <- gsub("^Dagr$", "\u0394agr", levels(pca_data$Strain)) # Replacing Dagr with ??agr
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+message("PCA variance explained for all data: PC1 = ", percentVar[1], "%, PC2 = ", percentVar[2], "%.")
+
+p <- create_pca_plot(pca_data, percentVar, "All data", c(21, 24, 22), c_strains)
+message("PCA plot for all data created. Displaying the plot below.")
+print(p) # This ensures the plot is visible in the output
+
+output_path <- file.path(outputdir, "PCA/PCA_All_Time.png")
+ggsave(
+  filename = output_path, p,
+  width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
+)
+message("PCA plot for all data saved at: ", output_path)
+
+# Define function to run PCA, display, and save the results for a specific timepoint
+run_and_save_pca <- function(rld_subset, timepoint, shape_id, fill_colors, outputdir) {
+  cat("Performing PCA for timepoint: ", timepoint, "...\n") # Display a message
+  pca_data <- plotPCA(rld_subset, intgroup = "Strain", returnData = TRUE)
+  percentVar <- round(100 * attr(pca_data, "percentVar"))
+  cat("PCA variance explained for ", timepoint, ": PC1 = ", percentVar[1], "%, PC2 = ", percentVar[2], "%.\n")
+
+  title <- paste(timepoint, "data")
+  p <- create_pca_plot(pca_data, percentVar, title, shape_id, fill_colors)
+  cat("PCA plot for ", timepoint, " created. Displaying the plot below.\n")
+  print(p) # Display the plot in the rendered Markdown
+
+  output_path <- file.path(outputdir, paste0("PCA/PCA_", timepoint, ".png"))
+  ggsave(
+    filename = output_path, p,
+    width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
+  )
+  cat("PCA plot for ", timepoint, " data saved at: ", output_path, "\n")
+}
+
+# Perform PCA and save plots for individual timepoints
+time_points <- c("1H30", "6H", "12H")
+shapes <- c("1H30" = 21, "6H" = 24, "12H" = 22)
+for (timepoint in time_points) {
+  rld_subset <- rld[, colData(rld)$Time == timepoint] # Subset the regularized log-transformed data
+  run_and_save_pca(rld_subset, timepoint, shapes[timepoint], c_strains, outputdir)
+}
+```
+
+### 6.  Differential gene expression (DE) analysis & visualization:
+
+#### Extract Specific Contrasts
+Differential expression analysis:
+This section automates the extraction of DESeq2 results for all relevant biological comparisons defined by the experimental design. Because the model includes an interaction term (Strain:Time), the contrasts required depend on the timepoint:
+   At the baseline timepoint (1H30), only main Strain effects are tested.
+   At later timepoints (6H, 12H), the contrast includes both:
+         - the baseline Strain effect, and
+         - the Strain:Time interaction effect for that timepoint.
+The script generates a full set of pairwise strain comparisons, including:
+   - each agr type vs Dagr
+   - all pairwise agr-vs-agr comparisons
+ For each timepoint and each strain pair, the appropriate DESeq2 contrast is constructed and results are saved into results_list.
+
+      
+```{r}
+# Define a function to extract results using the contrast approach
+extract_contrast_results <- function(dds, strain1, strain2, timepoint) {
+  # Extract DESeq2 results for the given strain and timepoint comparison
+  if (timepoint == "1H30") {
+    # Baseline timepoint logic (1H30)
+    if (strain2 == "Dagr") {
+      # Default comparison against Dagr at 1H30
+      main_effect <- paste0("Strain_", strain1, "_vs_Dagr")
+      cat("Performing comparison:", strain1, "vs", strain2, "at timepoint", timepoint, "using main effect:", main_effect, "\n")
+      results(dds, contrast = list(c(main_effect)))
+    } else {
+      # Pairwise comparison between two strains at baseline
+      main_effect_1 <- paste0("Strain_", strain1, "_vs_Dagr")
+      main_effect_2 <- paste0("Strain_", strain2, "_vs_Dagr")
+      cat("Performing pairwise comparison between strains:", strain1, "and", strain2, "at timepoint", timepoint, 
+          "using main effects:", main_effect_1, "and", main_effect_2, "\n")
+      results(dds, contrast = list(c(main_effect_1), c(main_effect_2)))
+    }
+  } else {
+    # Non-baseline logic (e.g., 6H or 12H)
+    if (strain2 == "Dagr") {
+      # Default comparison against Dagr at other timepoints
+      main_effect <- paste0("Strain_", strain1, "_vs_Dagr")
+      interaction_term <- paste0("Strain", strain1, ".Time", timepoint)
+      cat("Performing comparison:", strain1, "vs", strain2, "at timepoint", timepoint, 
+          "including interaction term:", interaction_term, "\n")
+      results(dds, contrast = list(c(main_effect, interaction_term)))
+    } else {
+      # Pairwise comparison between other strains at non-baseline timepoints
+      main_effect_1 <- paste0("Strain_", strain1, "_vs_Dagr")
+      main_effect_2 <- paste0("Strain_", strain2, "_vs_Dagr")
+      interaction_term_1 <- paste0("Strain", strain1, ".Time", timepoint)
+      interaction_term_2 <- paste0("Strain", strain2, ".Time", timepoint)
+      cat("Performing pairwise comparison between strains:", strain1, "and", strain2, "at timepoint", timepoint, 
+          "with interaction terms:", interaction_term_1, "and", interaction_term_2, "\n")
+      results(dds, contrast = list(c(main_effect_1, interaction_term_1), c(main_effect_2, interaction_term_2)))
+    }
+  }
+}
+
+# Create a list of strains for pairwise comparisons
+strains <- c("agr.I", "agr.II", "agr.III", "agr.IV")
+
+# Create a list of comparisons for all timepoints
+timepoints <- c("1H30", "6H", "12H")
+
+comparisons <- list()
+
+# Add comparisons against Dagr
+comparisons <- c(comparisons, list(
+  "agr_I_vs_Dagr" = list(strain1 = "agr.I", strain2 = "Dagr"),
+  "agr_II_vs_Dagr" = list(strain1 = "agr.II", strain2 = "Dagr"),
+  "agr_III_vs_Dagr" = list(strain1 = "agr.III", strain2 = "Dagr"),
+  "agr_IV_vs_Dagr" = list(strain1 = "agr.IV", strain2 = "Dagr")
+))
+
+# Dynamically add all pairwise comparisons among agr strains
+for (i in seq_along(strains)) {
+  for (j in seq_along(strains)) {
+    if (i < j) { # Avoid duplicating comparisons (e.g., agr.I vs agr.II and agr.II vs agr.I)
+      comparison_key <- paste0(gsub("\\.", "_", strains[i]), "_vs_", gsub("\\.", "_", strains[j]))
+      comparisons[[comparison_key]] <- list(strain1 = strains[i], strain2 = strains[j])
+    }
+  }
+}
+
+# Initialize an empty list to store results for all timepoints
+results_list <- list()
+
+# Loop through each timepoint and each comparison to extract results
+for (timepoint in timepoints) {
+  for (comp_name in names(comparisons)) {
+    strain1 <- comparisons[[comp_name]]$strain1
+    strain2 <- comparisons[[comp_name]]$strain2
+    
+    # Generate a unique key for each comparison and timepoint
+    result_key <- paste0(comp_name, "_", timepoint)
+    cat("Processing comparison: ", result_key, " (", strain1, " vs ", strain2, " at ", timepoint, ")\n")
+
+    # Extract and store the results
+    results_list[[result_key]] <- extract_contrast_results(dds, strain1, strain2, timepoint)
+  }
+}
+```
+
+#### Post-processing DESeq2 results:
+
+The results_list contains all differential expression results for every strain comparison across all timepoints. Here, the results are:
+   1. Grouped by timepoint (1H30, 6H, 12H) using name-matching.
+   2. Combined into a single dataframe per timepoint, where each comparison contributes its log2FC, p-value, 
+      and FDR-adjusted p-value.
+   3. Filtered to retain only genes significant in at least one comparison (padj < 0.05).
+   4. Saved to CSV files for downstream visualization and interpretation.
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Automatically group results by timepoints from results_list
+message("Grouping results by timepoints (12H, 6H, 1H30).")
+results_list_12H <- results_list[grep("_12H$", names(results_list))]
+results_list_6H <- results_list[grep("_6H$", names(results_list))]
+results_list_1H30 <- results_list[grep("_1H30$", names(results_list))]
+message("Grouped results into: ", 
+        length(results_list_1H30), " comparisons for 1H30, ", 
+        length(results_list_6H), " comparisons for 6H, and ", 
+        length(results_list_12H), " comparisons for 12H.")
+
+# Function to combine results into a single dataframe
+message("Defining function to combine results into a single dataframe.")
+combine_results <- function(results_group) {
+  do.call(
+    cbind,
+    lapply(names(results_group), function(name) {
+      res <- results_group[[name]]
+      data.frame(
+        row.names = rownames(res),  # Alignment by rownames
+        log2FoldChange = res$log2FoldChange,
+        pvalue = res$pvalue,
+        padj = res$padj
+      ) %>%
+        # Rename columns to include the comparison name
+        setNames(paste(name, c("log2FoldChange", "pvalue", "padj"), sep = "_"))
+    })
+  )
+}
+
+# Combine results dynamically for 12H, 6H and 1H30
+message("Combining DESeq2 results for each timepoint.")
+results_12H_combined <- combine_results(results_list_12H)
+message("Combined results for 12H: ", nrow(results_12H_combined), " genes.")
+results_6H_combined <- combine_results(results_list_6H)
+message("Combined results for 6H: ", nrow(results_6H_combined), " genes.")
+results_1H30_combined <- combine_results(results_list_1H30)
+message("Combined results for 1H30: ", nrow(results_1H30_combined), " genes.")
+
+# Function to filter significant genes
+filter_significant_genes <- function(results_combined) {
+  padj_columns <- grep("_padj$", colnames(results_combined), value = TRUE)
+  sig_genes <- results_combined[
+    rowSums(results_combined[, padj_columns] < 0.05, na.rm = TRUE) > 0, 
+  ]
+  return(sig_genes)
+}
+
+# Filter significant genes for each timepoint
+message("Filtering significant genes (padj < 0.05).")
+significant_genes_12H <- filter_significant_genes(results_12H_combined)
+message("Filtered significant genes for 12H: ", nrow(significant_genes_12H), " genes retained.")
+
+significant_genes_6H <- filter_significant_genes(results_6H_combined)
+message("Filtered significant genes for 6H: ", nrow(significant_genes_6H), " genes retained.")
+
+significant_genes_1H30 <- filter_significant_genes(results_1H30_combined)
+message("Filtered significant genes for 1H30: ", nrow(significant_genes_1H30), " genes retained.")
+
+# Save the filtered significant gene tables to CSV files
+output_file_12H <- file.path(outputdir, "significant_genes_12H.csv")
+output_file_6H <- file.path(outputdir, "significant_genes_6H.csv")
+output_file_1H30 <- file.path(outputdir, "significant_genes_1H30.csv")
+message("Saving significant genes tables to CSV files in output directory: ", outputdir)
+
+write.csv(significant_genes_12H, file = output_file_12H, row.names = TRUE)
+message("Saved significant genes for 12H to: ", output_file_12H)
+
+write.csv(significant_genes_6H, file = output_file_6H, row.names = TRUE)
+message("Saved significant genes for 6H to: ", output_file_6H)
+
+write.csv(significant_genes_1H30, file = output_file_1H30, row.names = TRUE)
+message("Saved significant genes for 1H30 to: ", output_file_1H30)
+```
+
+#### Visualize the Results: volcano-plots
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Create volcano plots for each strain comparison
+
+# Function: Generate and save volcano plots
+generate_volcano_plot <- function(results, comparison_name, forceaxis = TRUE, xlim = c(-10, 17), ylim = c(0, 65)) {
+  message("Generating volcano plot for comparison: ", comparison_name)
+  
+  # Create the volcano plot
+  volcano_plot <- EnhancedVolcano(
+    results,
+    lab = rownames(results),
+    ylab = bquote(~-Log[10] ~ adjusted ~ italic(p)),
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = "",
+    col = c('#383838', '#47d1d6', '#5750ad', '#db0400'),
+    legendLabels = c("NS", expression(Log[2] ~ FC), "Padj", expression(Padj ~ and ~ Log[2] ~ FC)),
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1.0,  # Log2 fold-change threshold
+    colAlpha = 0.5,
+    cutoffLineCol = "gray10",
+    legendIconSize = 3.0,
+    drawConnectors = TRUE,
+    arrowheads = FALSE,
+    widthConnectors = 0.5,
+    typeConnectors = 'open', 
+    lengthConnectors = unit(0.01, "npc"),
+    colConnectors = "grey10",
+    max.overlaps = 15,
+    maxoverlapsConnectors = NULL,
+    subtitle = "",  # No subtitle
+    caption = "",   # No caption
+    axisLabSize = sztxt,   # Adjust the axis label size
+    labSize = sztxt / 5,   # Adjust the label size
+    legendLabSize = sztxt  # Adjust the legend label size
+  )
+  
+  if (forceaxis) {
+    # Enforce axis limits
+    volcano_plot <- volcano_plot + coord_cartesian(xlim = xlim, ylim = ylim)
+  }
+  
+  # Display the volcano plot in the R Markdown output
+  print(volcano_plot)
+  
+  # Save the volcano plot as an image file
+  output_file <- file.path(outputdir, paste0("volcano_plot/VolcanoPlot_", comparison_name, ".png"))
+  ggsave(
+    filename = output_file,
+    plot = volcano_plot,
+    width = 150, height = 160, units = "mm", scale = 1, dpi = 600, bg = "white"
+  )
+  cat("Volcano plot saved for comparison: ", comparison_name, ". Filepath: ", output_file)
+}
+
+# Generate volcano plots for all comparisons in results_list
+message("Starting volcano plot generation for all comparisons...")
+for (comparison_name in names(results_list)) {
+  generate_volcano_plot(
+    results = results_list[[comparison_name]],
+    comparison_name = comparison_name,
+    forceaxis = TRUE,  # Enforce specified axis limits
+    xlim = c(-10, 17),  # Log2 fold-change axis limits
+    ylim = c(0, 65)     # -Log10 adjusted p-value axis limits
+  )
+}
+message("Completed generating and saving all volcano plots.")
+```
+
+
+#### Hierarchical Clustering Heatmap: 1H30 Time point
+
+Make heatmap of the most differentially extressed genes (fold change of |4|) amoung the ones found in DE analysis (fold change of |2|), only from the pairwise comparisons between the agr-types (doesn't include pairwise comparisons with delta agr).
+
+No genes from DE analysis (30 genes) at 1H30 have fold change of |4| (log2(2)). No heatmap can be made.
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Load the data
+data1H30_file <- file.path(outputdir, "significant_genes_1H30.csv")
+message("Loading data from: ", data1H30_file)
+data1H30 <- read.csv(data1H30_file, check.names = FALSE)
+message("Loaded data with ", nrow(data1H30), " genes and ", ncol(data1H30), " columns.")
+
+# Assign the name "GeneID" to the first column
+colnames(data1H30)[1] <- "GeneID"
+
+# Define the comparisons to keep
+selected_comparisons <- c("agr_I_vs_agr_II", "agr_I_vs_agr_III", "agr_I_vs_agr_IV", 
+                          "agr_II_vs_agr_III", "agr_II_vs_agr_IV", "agr_III_vs_agr_IV")
+
+# Identify columns to keep based on selected comparisons
+columns_to_keep <- grep(paste(selected_comparisons, collapse = "|"), colnames(data1H30), value = TRUE)
+columns_to_keep <- c("GeneID", columns_to_keep[grep("log2FoldChange|padj", columns_to_keep)])
+
+# Subset the data
+filtered_data <- data1H30[, columns_to_keep]
+message("Data subset for selected comparisons. Number of retained columns: ", ncol(filtered_data))
+
+# Identify log2FoldChange and padj columns
+log2fc_cols <- grep("log2FoldChange", colnames(filtered_data), value = FALSE)
+padj_cols <- grep("padj", colnames(filtered_data), value = FALSE)
+
+# Convert columns to numeric (if not already numeric)
+filtered_data[, log2fc_cols] <- lapply(filtered_data[, log2fc_cols], as.numeric)
+filtered_data[, padj_cols] <- lapply(filtered_data[, padj_cols], as.numeric)
+
+# Report the number of genes before filtering
+message("Number of genes before applying filtering criteria: ", nrow(filtered_data))
+
+# Apply the filtering criteria
+filtered_data <- filtered_data[
+    apply(filtered_data, 1, function(row) {
+        log2fc_values <- as.numeric(row[log2fc_cols])
+        padj_values <- as.numeric(row[padj_cols])
+        
+        # Use na.rm = TRUE and ensure NA doesn't exclude passing rows
+        any((log2fc_values > 2 | log2fc_values < -2) & padj_values < 0.05, na.rm = TRUE)
+    }),
+]
+
+# Remove rows with only NAs in all filtered columns
+filtered_data <- filtered_data[!apply(filtered_data, 1, function(row) all(is.na(row))), ]
+
+# Report the number of rows retained after filtering
+message("Number of genes after filtering by log2FoldChange > 2 or < -2 and padj < 0.05: ", nrow(filtered_data))
+```
+No genes from DE analysis (30 genes) at 1H30 have fold change of |4| (log2(2)). No heatmap can be made.
+
+#### Hierarchical Clustering Heatmap: 6H Time point
+
+Make heatmap of the most differentially extressed genes (fold change of |4|) amoung the ones found in DE analysis (fold change of |2|), only for the pairwise comparisons between the agr-types (doesn't include pairwise comparison with delta agr).
+
+Make the tables to extract only the data of interest:
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Load the data
+data6H_file <- file.path(outputdir, "significant_genes_6H.csv")
+message("Loading data from: ", data6H_file)
+data6H <- read.csv(data6H_file, check.names = FALSE)
+message("Loaded data with ", nrow(data6H), " genes and ", ncol(data6H), " columns.")
+
+# Assign the name "GeneID" to the first column
+colnames(data6H)[1] <- "GeneID"
+
+# Define the comparisons to keep
+selected_comparisons <- c("agr_I_vs_agr_II", "agr_I_vs_agr_III", "agr_I_vs_agr_IV", 
+                          "agr_II_vs_agr_III", "agr_II_vs_agr_IV", "agr_III_vs_agr_IV")
+
+# Identify columns to keep based on selected comparisons
+columns_to_keep <- grep(paste(selected_comparisons, collapse = "|"), colnames(data6H), value = TRUE)
+columns_to_keep <- c("GeneID", columns_to_keep[grep("log2FoldChange|padj", columns_to_keep)])
+
+# Subset the data
+filtered_data <- data6H[, columns_to_keep]
+message("Data subset for selected comparisons. Number of retained columns: ", ncol(filtered_data))
+
+# Identify log2FoldChange and padj columns
+log2fc_cols <- grep("log2FoldChange", colnames(filtered_data), value = FALSE)
+padj_cols <- grep("padj", colnames(filtered_data), value = FALSE)
+
+# Convert columns to numeric (ensures all data is numeric for filtering operations)
+filtered_data[, log2fc_cols] <- lapply(filtered_data[, log2fc_cols], as.numeric)
+filtered_data[, padj_cols] <- lapply(filtered_data[, padj_cols], as.numeric)
+
+# Report the number of genes before filtering
+message("Number of genes before applying filtering criteria: ", nrow(filtered_data))
+
+# Apply filtering criteria: log2 fold-change > 2 or < -2 and padj < 0.05
+filtered_data <- filtered_data[
+    apply(filtered_data, 1, function(row) {
+        log2fc_values <- as.numeric(row[log2fc_cols])
+        padj_values <- as.numeric(row[padj_cols])
+        # Use na.rm = TRUE to handle any NA values correctly
+        any((log2fc_values > 2 | log2fc_values < -2) & padj_values < 0.05, na.rm = TRUE)
+    }),
+]
+
+# Remove rows with only NAs in all columns
+filtered_data <- filtered_data[!apply(filtered_data, 1, function(row) all(is.na(row))), ]
+
+# Report the number of rows retained after filtering
+message("Number of genes after filtering by log2FoldChange > 2 or < -2 and padj < 0.05: ", nrow(filtered_data))
+```
+94 genes are kept with a fold change of |4|.
+
+#### Draw the heatmap: (6h, LFC(2))
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Prepare data for the heatmap
+
+# Filter the rlog-transformed data for significant genes at 6H
+message("Filtering rlog-transformed data for significant genes at 6H.")
+heatmap_data_6H <- assay(rld)[rownames(significant_genes_6H), ]
+message("Filtered rlog data for 6H has dimensions: ", nrow(heatmap_data_6H), " genes x ", ncol(heatmap_data_6H), " samples.")
+
+# Prepare annotation data from colData
+message("Preparing column annotations: Reordering samples by Time and then Strain.")
+hm6H <- as.data.frame(colData(dds)[, c("Strain", "Replicate", "Time")])
+hm6H <- hm6H[order(hm6H$Time, hm6H$Strain), ]  # Order columns by Time then Strain
+
+# Reorder the columns of heatmap data to match the ordered annotations
+heatmap_data_6H <- heatmap_data_6H[, rownames(hm6H)]
+
+# Identify columns corresponding to timepoint 6H
+time_6H_columns <- which(grepl("t6", colnames(heatmap_data_6H)))
+heatmap_data_6H <- heatmap_data_6H[, time_6H_columns]
+message("Subset heatmap data columns for 't6'. Heatmap now has dimensions: ", 
+        nrow(heatmap_data_6H), " genes x ", ncol(heatmap_data_6H), " samples.")
+
+# Filtered data: alternate heatmap version using genes with FC > 4 or < -4
+message("Preparing alternate filtered heatmap data for genes with log2 fold-change > 4 or < -4.")
+heatmap_data_6Halt <- assay(rld)[filtered_data$GeneID, ]
+heatmap_data_6Halt <- heatmap_data_6Halt[, rownames(hm6H)]  # Reorder columns to match annotation
+heatmap_data_6Halt <- heatmap_data_6Halt[, time_6H_columns]  # Keep only time 6H columns
+message("Filtered heatmap data for significant genes with FC > 4 or < -4 has dimensions: ", 
+        nrow(heatmap_data_6Halt), " genes x ", ncol(heatmap_data_6Halt), " samples.")
+
+# Adjust levels of Strain annotations for plot
+levels(hm6H$Strain) <- gsub("^Dagr$", "\u0394agr", levels(hm6H$Strain))
+
+# Generate the heatmap plot
+message("Generating heatmap for filtered data (log-scaled counts).")
+p <- pheatmap(
+  heatmap_data_6Halt,
+  cluster_rows = TRUE,  # Cluster rows (genes)
+  cluster_cols = FALSE, # Do not cluster columns (samples)
+  show_rownames = TRUE, # Show gene names
+  show_colnames = FALSE,
+  fontsize = sztxt * 0.8,
+  legend_labels = "rlog counts",
+  legend = TRUE,
+  annotation_col = subset(hm6H, select = -Replicate), # Annotation excluding Replicate
+  gaps_col = 3 * 5,
+  treeheight_row = 0,  # No row dendrogram
+  annotation_colors = list(
+    Strain = c(
+      "\u0394agr" = c_strains[1],
+      "agr-I" = c_strains[2],
+      "agr-II" = c_strains[3],
+      "agr-III" = c_strains[4],
+      "agr-IV" = c_strains[5]
+    ),
+    Time = c("6H" = "#5da0C7")
+  ),
+  main = "",
+  na_col = "grey",  # Color for missing values
+  color = colorRampPalette(c("white", "#0303a8"))(100),  # Color gradient
+  fontsize_row = sztxt * 0.4,  # Adjust row font size
+  border_color = "#525252"  # Border color for cells
+)
+
+# Display the heatmap in the R Markdown output
+print(p)
+
+# Save the heatmap
+heatmap_output_file <- file.path(outputdir, "heatmap/HeatMap_6H_Order.png")
+ggsave(
+  filename = heatmap_output_file,
+  plot = p,
+  width = 100, height = 190, units = "mm", scale = 1, dpi = 600, bg = "white", limitsize = FALSE
+)
+message("Heatmap saved to: ", heatmap_output_file)
+```
+
+
+#### Hierarchical Clustering Heatmap: 12H Time point
+
+Make heatmap of the most differentially extressed genes (fold change of |4|) amoung the ones found in DE analysis (fold change of |2|), only for the pairwise comparisons between the agr-types (doesn't include pairwise comparison with delta agr).
+
+Make the tables to extract only the data of interest:
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Load the data
+data12H_file <- file.path(outputdir, "significant_genes_12H.csv")
+message("Loading data from: ", data12H_file)
+data12H <- read.csv(data12H_file, check.names = FALSE)
+message("Loaded data with ", nrow(data12H), " genes and ", ncol(data12H), " columns.")
+
+# Assign the name "GeneID" to the first column
+colnames(data12H)[1] <- "GeneID"
+
+# Define the comparisons to keep
+selected_comparisons <- c("agr_I_vs_agr_II", "agr_I_vs_agr_III", "agr_I_vs_agr_IV", 
+                          "agr_II_vs_agr_III", "agr_II_vs_agr_IV", "agr_III_vs_agr_IV")
+
+# Identify columns to retain based on selected comparisons
+columns_to_keep <- grep(paste(selected_comparisons, collapse = "|"), colnames(data12H), value = TRUE)
+columns_to_keep <- c("GeneID", columns_to_keep[grep("log2FoldChange|padj", columns_to_keep)])
+
+# Subset the data
+filtered_data <- data12H[, columns_to_keep]
+message("Data subset. Retained ", ncol(filtered_data), " columns.")
+
+# Identify log2FoldChange and padj columns
+log2fc_cols <- grep("log2FoldChange", colnames(filtered_data), value = FALSE)
+padj_cols <- grep("padj", colnames(filtered_data), value = FALSE)
+
+# Convert columns to numeric
+filtered_data[, log2fc_cols] <- lapply(filtered_data[, log2fc_cols], as.numeric)
+filtered_data[, padj_cols] <- lapply(filtered_data[, padj_cols], as.numeric)
+
+# Report the number of genes before filtering
+message("Number of genes before applying filtering criteria: ", nrow(filtered_data))
+
+# Apply filtering criteria: log2 fold-change > 2 or < -2 and padj < 0.05
+filtered_data <- filtered_data[
+  apply(filtered_data, 1, function(row) {
+    log2fc_values <- as.numeric(row[log2fc_cols])
+    padj_values <- as.numeric(row[padj_cols])
+    # Filter genes with log2FC > 2 or < -2 and padj < 0.05
+    any((log2fc_values > 2 | log2fc_values < -2) & padj_values < 0.05, na.rm = TRUE)
+  }),
+]
+
+# Remove rows with only NAs in all columns
+filtered_data <- filtered_data[!apply(filtered_data, 1, function(row) all(is.na(row))), ]
+
+# Report the number of genes retained after filtering
+message("Number of genes retained after filtering by log2FoldChange > 2 or < -2 and padj < 0.05: ", 
+        nrow(filtered_data))
+```
+43 genes are kept with a fold change of |4|.
+
+#### Draw the heatmap: (12h, LFC(2))
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Filter the rlog-transformed data for significant genes at 12H
+message("Filtering rlog-transformed data for significant genes at 12H.")
+heatmap_data_12H <- assay(rld)[rownames(significant_genes_12H), ]
+message("Filtered rlog data for 12H has dimensions: ", nrow(heatmap_data_12H), " genes x ", ncol(heatmap_data_12H), " samples.")
+
+# Prepare annotation data from colData
+message("Preparing column annotations: Reordering samples by Time and then Strain.")
+hm12H <- as.data.frame(colData(dds)[, c("Strain", "Replicate", "Time")])
+hm12H <- hm12H[order(hm12H$Time, hm12H$Strain), ]  # Order columns by Time then Strain
+
+# Reorder columns of heatmap data to match annotation order
+heatmap_data_12H <- heatmap_data_12H[, rownames(hm12H)]
+
+# Identify columns corresponding to 12H time point
+time_12H_columns <- which(grepl("t12", colnames(heatmap_data_12H)))
+heatmap_data_12H <- heatmap_data_12H[, time_12H_columns]
+message("Subset heatmap data columns for 't12'. Heatmap now has dimensions: ", 
+        nrow(heatmap_data_12H), " genes x ", ncol(heatmap_data_12H), " samples.")
+
+# Filtered data for genes with FC > 4 or < -4
+message("Preparing alternate filtered heatmap data for genes with log2 fold-change > 4 or < -4.")
+heatmap_data_12Halt <- assay(rld)[filtered_data$GeneID, ]
+heatmap_data_12Halt <- heatmap_data_12Halt[, rownames(hm12H)]  # Reorder columns to match annotation
+heatmap_data_12Halt <- heatmap_data_12Halt[, time_12H_columns] # Keep only time 12H columns
+message("Filtered heatmap data for significant genes with FC > 4 or < -4 has dimensions: ", 
+        nrow(heatmap_data_12Halt), " genes x ", ncol(heatmap_data_12Halt), " samples.")
+
+# Adjust levels of Strain annotations for plot
+levels(hm12H$Strain) <- gsub("^Dagr$", "\u0394agr", levels(hm12H$Strain))
+
+# Generate the heatmap plot
+message("Generating heatmap for filtered data (log-scaled counts).")
+p <- pheatmap(
+  heatmap_data_12Halt,
+  cluster_rows = TRUE,  # Cluster rows (genes)
+  cluster_cols = FALSE, # Do not cluster columns (samples)
+  show_rownames = TRUE, # Show gene names
+  show_colnames = FALSE,
+  fontsize = sztxt * 0.8,
+  legend_labels = "rlog counts",
+  legend = TRUE,
+  annotation_col = subset(hm12H, select = -Replicate), # Annotation excluding Replicate
+  gaps_col = 3 * 5,
+  treeheight_row = 0,  # No row dendrogram
+  annotation_colors = list(
+    Strain = c(
+      "\u0394agr" = c_strains[1],
+      "agr-I" = c_strains[2],
+      "agr-II" = c_strains[3],
+      "agr-III" = c_strains[4],
+      "agr-IV" = c_strains[5]
+    ),
+    Time = c("12H" = "#3b3d69")
+  ),
+  main = "",
+  na_col = "grey",  # Color for missing values
+  color = colorRampPalette(c("white", "#0303a8"))(100),  # Color gradient
+  fontsize_row = sztxt * 0.4,  # Adjust row font size
+  border_color = "#525252"  # Border color for cells
+)
+
+# Display the heatmap in the R Markdown output
+print(p)
+
+# Save the heatmap
+heatmap_output_file <- file.path(outputdir, "heatmap/HeatMap_12H_Order.png")
+ggsave(
+  filename = heatmap_output_file,
+  plot = p,
+  width = 100, height = 130, units = "mm", scale = 1, dpi = 600, bg = "white", limitsize = FALSE
+)
+message("Heatmap saved to: ", heatmap_output_file)
+```
+
+
+
+### 7.  Over-representation analysis 
+
+Following differential expression, ORA was performed using only the pairwise comparisons between agr types (excluding the DELTAagr (Dagr) strain). For each contrast, the set of significantly DE genes served as the input, with the gene universe defined as all tested genes. ORA was run with default parameters against the KEGG database for Staphylococcus aureus (sae), and multiple-testing correction was applied using the Benjamini-Hochberg method. Enriched pathways (FDR < 0.05) were retained for downstream interpretation.
+
+#### Perform the DeSeq2 analysis but keeping the locus_tag instead of the gene names from Aureowiki
+agr genes (agrABCD and hld) are still removed of the analysis
+
+```{r}
+# Load raw counts
+setwd(wd)
+counts_matrix2 <- read.csv("counts_matrix.csv", row.names = 1, sep = ',')
+message("Re-loaded counts matrix with dimensions: ", dim(counts_matrix2)[1], " genes x ", dim(counts_matrix2)[2], " samples.")
+# Change the "-" into "_" in column names
+colnames(counts_matrix2) <- gsub("NM.", "NM_", colnames(counts_matrix2))
+
+# Remove the agr-locus genes as they were not included in previous analysis (DE).  
+counts_matrix2 <- counts_matrix2[!rownames(counts_matrix2) %in% c("NWMN_1946", "NWMN_1943", "NWMN_1944", "NWMN_1945", "RNAIII", "NWMN_2624"), ]
+metadata <- metadata[colnames(counts_matrix2), ]
+
+dds2 <- DESeqDataSetFromMatrix(countData = counts_matrix2,
+                              colData = metadata,
+                              design = ~ Strain + Time + Strain:Time) # Interaction model
+dds2 <- DESeq(dds2)
+# Check the available result names
+message("Available result names in dds2:")
+resultsNames(dds2)
+
+```
+
+#### ORA:
+
+Only pairwise agr-agr comparisons (exclude DELTAagr/Dagr) were used, input significant DE genes from each contrast, default parameters were used, as well as KEGG enrichment for Staphylococcus aureus ("sae").
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Overrepresentation Analysis (ORA) for pairwise comparisons among agr strains at all time points
+
+# Strains for pairwise comparisons
+agr_strains2 <- c("agr.I", "agr.II", "agr.III", "agr.IV")
+
+# Create a list of comparisons for all timepoints
+timepoints <- c("1H30", "6H", "12H")
+# Ensure output directory for ORA results exists
+ora_output_dir <- file.path(outputdir, "ora_results")
+if (!dir.exists(ora_output_dir)) {
+  dir.create(ora_output_dir, recursive = TRUE)
+  message("Created directory for ORA results: ", ora_output_dir)
+}
+
+# Loop through timepoints and agr strain pairs for ORA
+for (t in timepoints) {
+  for (i2 in 1:(length(agr_strains2) - 1)) {
+    for (j2 in (i2 + 1):length(agr_strains2)) {
+      # Define strain pair
+      s1_2 <- agr_strains2[i2]
+      s2_2 <- agr_strains2[j2]
+      
+      # Perform pairwise comparison using the `extract_contrast_results` function
+      message("Performing pairwise comparison between ", s1_2, " and ", s2_2, " at ", t, ".")
+      res2 <- extract_contrast_results(dds2, strain1 = s1_2, strain2 = s2_2, timepoint = t)
+      
+      # Check for valid results and filter significant genes
+      if (is.null(res2)) {
+        message("No valid results for ", s1_2, " vs ", s2_2, " at ", t)
+        next
+      }
+      res2 <- na.omit(res2)
+      res_sig2 <- res2[res2$padj < 0.05 & abs(res2$log2FoldChange) > 1, ]
+      message(s1_2, " vs ", s2_2, " at ", t, ": ", nrow(res_sig2), " significant genes.")
+      
+      # Skip if no significant genes are found
+      if (nrow(res_sig2) == 0) {
+        message("No significant genes found for ", s1_2, " vs ", s2_2, " at ", t)
+        next
+      }
+
+      # ---- UPREGULATED GENES ----
+      up_ids2 <- rownames(res_sig2[res_sig2$log2FoldChange > 1, ])
+      up_ids2 <- unique(up_ids2[!is.na(up_ids2)])  # Remove NA and keep unique IDs
+
+      if (length(up_ids2) > 0) {
+        message("Performing ORA for UP-regulated genes for ", s1_2, " vs ", s2_2, " at ", t, "...")
+        enrich_kegg2_up <- enrichKEGG(
+          gene = up_ids2,
+          organism = "sae",
+          keyType = "kegg",
+          pvalueCutoff = 0.05
+        )
+
+        if (!is.null(enrich_kegg2_up) && nrow(enrich_kegg2_up) > 0) {
+          output_file_up <- file.path(ora_output_dir, paste0("ORA_UP_", s1_2, "_vs_", s2_2, "_", t, ".csv"))
+          write.csv(as.data.frame(enrich_kegg2_up), file = output_file_up, row.names = FALSE)
+          message("ORA results for UP-regulated genes saved to: ", output_file_up)
+        } else {
+          message("No enriched KEGG pathways for UP-regulated genes (", s1_2, " vs ", s2_2, " at ", t, ").")
+        }
+      } else {
+        message("No UP-regulated genes found for ", s1_2, " vs ", s2_2, " at ", t, ".")
+      }
+
+      # ---- DOWNREGULATED GENES ----
+      down_ids2 <- rownames(res_sig2[res_sig2$log2FoldChange < -1, ])
+      down_ids2 <- unique(down_ids2[!is.na(down_ids2)])  # Remove NA and keep unique IDs
+
+      if (length(down_ids2) > 0) {
+        message("Performing ORA for DOWN-regulated genes for ", s1_2, " vs ", s2_2, " at ", t, "...")
+        enrich_kegg2_down <- enrichKEGG(
+          gene = down_ids2,
+          organism = "sae",
+          keyType = "kegg",
+          pvalueCutoff = 0.05
+        )
+
+        if (!is.null(enrich_kegg2_down) && nrow(enrich_kegg2_down) > 0) {
+          output_file_down <- file.path(ora_output_dir, paste0("ORA_DOWN_", s1_2, "_vs_", s2_2, "_", t, ".csv"))
+          write.csv(as.data.frame(enrich_kegg2_down), file = output_file_down, row.names = FALSE)
+          message("ORA results for DOWN-regulated genes saved to: ", output_file_down)
+        } else {
+          message("No enriched KEGG pathways for DOWN-regulated genes (", s1_2, " vs ", s2_2, " at ", t, ").")
+        }
+      } else {
+        message("No DOWN-regulated genes found for ", s1_2, " vs ", s2_2, " at ", t, ".")
+      }
+    }
+  }
+}
+```
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Combine ORA CSV files into single tables (one for each timepoint) with and without gene name replacement
+
+# Ensure the ORA output directory exists
+ora_output_dir <- file.path(outputdir, "ora_results")
+if (!dir.exists(ora_output_dir)) {
+  stop("ORA results directory does not exist: ", ora_output_dir)
+}
+
+# Define a function to replace locus tags in the Genes column with gene names
+replace_gene_names <- function(genes, name_replacement) {
+  genes_split <- strsplit(genes, split = "/")  # Split concatenated IDs like "NWMN_0323/NWMN_0668"
+  replaced_genes <- lapply(genes_split, function(gene_list) {
+    sapply(gene_list, function(gene_id) {
+      match_row <- name_replacement[name_replacement$locus_tag == gene_id, ]
+      if (nrow(match_row) > 0) {
+        return(match_row$gene)  # Replace locus tag with gene name
+      } else {
+        return(gene_id)  # If no match is found, retain original locus tag
+      }
+    })
+  })
+  # Re-combine the replaced genes with "/" separators
+  sapply(replaced_genes, function(g) paste(g, collapse = "/"))
+}
+
+# Define a function to combine ORA files for a specific timepoint
+combine_csv_results <- function(timepoint, name_replacement, replace_genes = TRUE) {
+  # List all CSV files that match the current timepoint
+  ora_files <- list.files(path = ora_output_dir, pattern = paste0("_", timepoint, "\\.csv$"), full.names = TRUE)
+  
+  if (length(ora_files) == 0) {
+    cat("No ORA results found for timepoint: ", timepoint, "\n")
+    return(NULL)
+  }
+  
+  # Initialize an empty data frame to store combined results
+  combined_results <- data.frame()
+  
+  # Loop through each file and extract relevant columns
+  for (file in ora_files) {
+    direction <- ifelse(grepl("ORA_UP", file), "UP", "DOWN")
+    comparison <- sub("ORA_(UP|DOWN)_|.csv", "", basename(file)) %>%
+      gsub(paste0("_", timepoint), "", .) %>%
+      gsub("_", " vs ", .)
+    
+    # Read the data and extract relevant columns
+    ora_data <- read.csv(file, stringsAsFactors = FALSE)
+    if (nrow(ora_data) > 0) {
+      selected_data <- ora_data %>%
+        select(Description, GeneRatio, geneID, p.adjust) %>%
+        rename(
+          `enriched pathway` = Description,
+          Genes = geneID,
+          padj = p.adjust
+        )
+      
+      # Replace locus tags in the "Genes" column with human-readable gene names if desired
+      if (replace_genes) {
+        selected_data$Genes <- replace_gene_names(selected_data$Genes, name_replacement)
+      }
+      
+      # Add metadata columns
+      selected_data$comparison <- comparison
+      selected_data$`gene set direction` <- direction
+      
+      # Append selected data to the combined results
+      combined_results <- rbind(combined_results, selected_data)
+    } else {
+      cat("No enriched pathways in file: ", file, "\n")
+    }
+  }
+  
+  # Return combined results
+  cat("Combined results for timepoint ", timepoint, ": ", nrow(combined_results), " enriched pathways.\n")
+  return(combined_results)
+}
+
+# Combine both replaced and non-replaced results for each timepoint
+timepoints <- c("1H30", "6H", "12H")
+combined_results_replaced <- lapply(timepoints, function(tp) combine_csv_results(tp, name_replacement, replace_genes = TRUE))
+combined_results_nonreplaced <- lapply(timepoints, function(tp) combine_csv_results(tp, name_replacement, replace_genes = FALSE))
+
+# Assign the combined results to individual data frames for each timepoint
+combined_ora_replaced_1H30 <- combined_results_replaced[[1]]
+combined_ora_replaced_6H <- combined_results_replaced[[2]]
+combined_ora_replaced_12H <- combined_results_replaced[[3]]
+
+combined_ora_nonreplaced_1H30 <- combined_results_nonreplaced[[1]]
+combined_ora_nonreplaced_6H <- combined_results_nonreplaced[[2]]
+combined_ora_nonreplaced_12H <- combined_results_nonreplaced[[3]]
+
+# Save both replaced and non-replaced results as CSV files
+write.csv(combined_ora_replaced_1H30, file.path(outputdir, "combined_ora_1H30.csv"), row.names = FALSE)
+write.csv(combined_ora_replaced_6H, file.path(outputdir, "combined_ora_6H.csv"), row.names = FALSE)
+write.csv(combined_ora_replaced_12H, file.path(outputdir, "combined_ora_12H.csv"), row.names = FALSE)
+
+write.csv(combined_ora_nonreplaced_1H30, file.path(outputdir, "combined_ora_1H30_NWMN.csv"), row.names = FALSE)
+write.csv(combined_ora_nonreplaced_6H, file.path(outputdir, "combined_ora_6H_NWMN.csv"), row.names = FALSE)
+write.csv(combined_ora_nonreplaced_12H, file.path(outputdir, "combined_ora_12H_NWMN.csv"), row.names = FALSE)
+
+message("Combined results (both replaced and non-replaced) saved as CSV files in: ", outputdir)
+```
+
+
+### 8.  Gene Set Enrichment Analysis 
+
+For each pairwise comparison between agr types (agr.I to agr.IV), and for each sampled timepoint (1H30, 6H, 12H), GSEA is performed using a ranked gene list derived from DESeq2 results. 
+The ranking metric prioritizes the Wald statistic (res$stat), with log2FoldChange used only if stat is unavailable. 
+The analysis uses clusterProfiler::gseKEGG with default multilevel settings, the KEGG organism code "sae" (Staphylococcus aureus), and minimal pathway size filtering (minGSSize = 10). 
+Significant enriched pathways (FDR < 0.05) are saved for each comparison, along with separate tables for positively enriched (NES > 0) and negatively enriched (NES < 0) pathways.
+
+```{r, message = TRUE, warning = FALSE, results = "markup"}
+# Parameters / settings
+# Ensure the GSEA output directory exists
+outdir <- file.path(outputdir, "gsea_results")
+if (!dir.exists(outdir)) {
+  dir.create(outdir, recursive = TRUE)
+  message("Created GSEA results directory: ", outdir)
+}
+
+# Show available result names
+rn <- resultsNames(dds2)
+message("Available DESeq2 result names: ", paste(rn, collapse = ", "))
+
+#### GSEA parameters
+timepoints <- c("1H30", "6H", "12H")
+agr_strains <- c("agr.I", "agr.II", "agr.III", "agr.IV")
+kegg_org <- "sae"        # KEGG organism code
+minGSSize <- 10
+pvalueCutoff <- 0.05
+add_kegg_prefix <- FALSE # Set TRUE only if KEGG IDs need "sae:" prefix
+
+# Initialize list to collect GSEA results for each timepoint
+combined_gsea_results <- list("1H30" = data.frame(), "6H" = data.frame(), "12H" = data.frame())
+
+# ----------------- MAIN loop: pairwise agr comparisons -----------------
+for (tp in timepoints) {
+  for (i in seq_len(length(agr_strains) - 1)) {
+    for (j in (i + 1):length(agr_strains)) {
+      # Define strains and perform pairwise comparison
+      s1 <- agr_strains[i]; s2 <- agr_strains[j]
+      message("Running GSEA: ", s1, " vs ", s2, " at ", tp)
+      
+      # Perform pairwise comparison using `extract_contrast_results`
+      res_pair <- extract_contrast_results(dds2, strain1 = s1, strain2 = s2, timepoint = tp)
+      if (is.null(res_pair)) {
+        message("No valid results for ", s1, " vs ", s2, " at ", tp)
+        next
+      }
+      
+      res_pair <- as.data.frame(res_pair)
+
+      # Determine ranking metric: prefer res$stat, fallback to log2FoldChange
+      if ("stat" %in% colnames(res_pair) && !all(is.na(res_pair$stat))) {
+        ranking_metric <- res_pair$stat
+      } else if ("log2FoldChange" %in% colnames(res_pair) && !all(is.na(res_pair$log2FoldChange))) {
+        warning("res$stat not available; using log2FoldChange for ranking (less ideal).")
+        ranking_metric <- res_pair$log2FoldChange
+      } else {
+        warning("No suitable ranking metric; skipping comparison: ", s1, " vs ", s2, " at ", tp)
+        next
+      }
+
+      # Prepare ranking metric
+      names(ranking_metric) <- rownames(res_pair)
+      ranking_metric <- ranking_metric[!is.na(ranking_metric)]
+      if (length(ranking_metric) < 10) { 
+        message("Too few ranked genes; skipping ", s1, " vs ", s2, " at ", tp); 
+        next 
+      }
+      if (add_kegg_prefix) names(ranking_metric) <- paste0(kegg_org, ":", names(ranking_metric))
+      geneList <- sort(ranking_metric, decreasing = TRUE)
+
+      # Run gseKEGG
+      gsea_kegg <- tryCatch({
+        gseKEGG(geneList = geneList, organism = kegg_org, minGSSize = minGSSize,
+                pvalueCutoff = pvalueCutoff, verbose = FALSE)
+      }, error = function(e) { warning("gseKEGG error: ", conditionMessage(e)); NULL })
+      
+      if (is.null(gsea_kegg) || nrow(as.data.frame(gsea_kegg)) == 0) {
+        message("No GSEA KEGG results for ", s1, " vs ", s2, " at ", tp)
+        next
+      }
+
+      # Save GSEA results (write to CSV files)
+      fname_pref <- file.path(outdir, paste0("gsea_kegg_", gsub("\\.", "_", s1), "_vs_", gsub("\\.", "_", s2), "_", tp))
+      res_df <- as.data.frame(gsea_kegg)
+      write.csv(res_df, file = paste0(fname_pref, ".csv"), row.names = FALSE)
+
+      # Add metadata and combine results
+      res_df$Comparison <- paste(s1, "vs", s2)
+      res_df$`Positively or Negatively-enriched` <- ifelse(res_df$NES > 0, "Positively-enriched", "Negatively-enriched")
+
+      # Collect for combined results
+      combined_gsea_results[[tp]] <- rbind(combined_gsea_results[[tp]], res_df)
+    }
+  }
+}
+
+# Sorting and saving each combined results table
+for (tp in timepoints) {
+  combined_results <- combined_gsea_results[[tp]]
+  
+  if (nrow(combined_results) > 0) {
+    combined_results <- combined_results %>%
+      select(Comparison, `Positively or Negatively-enriched`, ID, Description, setSize, 
+             enrichmentScore, NES, pvalue, p.adjust, qvalue, rank, leading_edge, core_enrichment) %>%
+      arrange(Comparison, 
+              desc(`Positively or Negatively-enriched` == "Negatively-enriched"), 
+              desc(NES > 0), 
+              NES)
+
+    output_file <- file.path(outputdir, paste0("combined_gsea_", tp, ".csv"))
+    write.csv(combined_results, output_file, row.names = FALSE)
+    message("Combined and sorted GSEA results saved for timepoint ", tp, ": ", output_file)
+  } else {
+    message("No GSEA results to save for timepoint ", tp)
+  }
+}
+```
+
+
+### 9. Session info
+
+```{r}
+sessionInfo()
+```
+
+R version 4.5.2 (2025-10-31)
+Platform: x86_64-apple-darwin20
+Running under: macOS Sequoia 15.7.2
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.5-x86_64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.1
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: Europe/Paris
+tzcode source: internal
+
+attached base packages:
+[1] stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] RColorBrewer_1.1-3          pathviewr_1.1.8             enrichplot_1.30.4          
+ [4] clusterProfiler_4.18.3      lubridate_1.9.4             forcats_1.0.1              
+ [7] stringr_1.6.0               purrr_1.2.0                 tidyr_1.3.1                
+[10] tibble_3.3.0                tidyverse_2.0.0             EnhancedVolcano_1.28.2     
+[13] ggrepel_0.9.6               ggplot2_4.0.1               pheatmap_1.0.13            
+[16] apeglm_1.32.0               DESeq2_1.50.2               SummarizedExperiment_1.40.0
+[19] Biobase_2.70.0              MatrixGenerics_1.22.0       matrixStats_1.5.0          
+[22] GenomicRanges_1.62.1        Seqinfo_1.0.0               IRanges_2.44.0             
+[25] S4Vectors_0.48.0            BiocGenerics_0.56.0         generics_0.1.4             
+[28] readr_2.1.6                 dplyr_1.1.4                
+
+loaded via a namespace (and not attached):
+  [1] rstudioapi_0.17.1       jsonlite_2.0.0          tidydr_0.0.6            magrittr_2.0.4         
+  [5] ggtangle_0.0.9          farver_2.1.2            rmarkdown_2.30          ragg_1.5.0             
+  [9] fs_1.6.6                vctrs_0.6.5             memoise_2.0.1           ggtree_4.0.1           
+ [13] htmltools_0.5.9         S4Arrays_1.10.1         SparseArray_1.10.6      gridGraphics_0.5-1     
+ [17] htmlwidgets_1.6.4       plyr_1.8.9              cachem_1.1.0            igraph_2.2.1           
+ [21] lifecycle_1.0.4         pkgconfig_2.0.3         gson_0.1.0              Matrix_1.7-4           
+ [25] R6_2.6.1                fastmap_1.2.0           digest_0.6.39           numDeriv_2016.8-1.1    
+ [29] aplot_0.2.9             ggnewscale_0.5.2        patchwork_1.3.2         AnnotationDbi_1.72.0   
+ [33] textshaping_1.0.4       RSQLite_2.4.5           labeling_0.4.3          timechange_0.3.0       
+ [37] polyclip_1.10-7         httr_1.4.7              abind_1.4-8             compiler_4.5.2         
+ [41] bit64_4.6.0-1           fontquiver_0.2.1        withr_3.0.2             S7_0.2.1               
+ [45] BiocParallel_1.44.0     DBI_1.2.3               ggforce_0.5.0           R.utils_2.13.0         
+ [49] MASS_7.3-65             rappdirs_0.3.3          DelayedArray_0.36.0     tools_4.5.2            
+ [53] scatterpie_0.2.6        ape_5.8-1               R.oo_1.27.1             glue_1.8.0             
+ [57] nlme_3.1-168            GOSemSim_2.36.0         grid_4.5.2              cluster_2.1.8.1        
+ [61] reshape2_1.4.5          fgsea_1.36.0            gtable_0.3.6            tzdb_0.5.0             
+ [65] R.methodsS3_1.8.2       data.table_1.17.8       hms_1.1.4               XVector_0.50.0         
+ [69] pillar_1.11.1           vroom_1.6.7             yulab.utils_0.2.3       emdbook_1.3.14         
+ [73] splines_4.5.2           tweenr_2.0.3            treeio_1.34.0           lattice_0.22-7         
+ [77] bit_4.6.0               tidyselect_1.2.1        fontLiberation_0.1.0    GO.db_3.22.0           
+ [81] locfit_1.5-9.12         Biostrings_2.78.0       knitr_1.50              fontBitstreamVera_0.1.1
+ [85] xfun_0.55               stringi_1.8.7           lazyeval_0.2.2          ggfun_0.2.0            
+ [89] yaml_2.3.12             evaluate_1.0.5          codetools_0.2-20        bbmle_1.0.25.1         
+ [93] gdtools_0.4.4           qvalue_2.42.0           BiocManager_1.30.27     ggplotify_0.1.3        
+ [97] cli_3.6.5               systemfonts_1.3.1       Rcpp_1.1.0              coda_0.19-4.1          
+[101] png_0.1-8               bdsmatrix_1.3-7         parallel_4.5.2          blob_1.2.4             
+[105] DOSE_4.4.0              mvtnorm_1.3-3           tidytree_0.4.6          ggiraph_0.9.2          
+[109] scales_1.4.0            crayon_1.5.3            rlang_1.1.6             cowplot_1.2.0          
+[113] fastmatch_1.1-6         KEGGREST_1.50.0 
