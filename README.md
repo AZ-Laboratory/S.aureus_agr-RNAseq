@@ -5,7 +5,7 @@ Analyses include differential expression testing, PCA, clustering, enrichment an
 If you use any part of this code or data, please cite:
 Pivard M., et al. (2026). Staphylococcus aureus agr-type vs genetic background: molecular signatures determining differential metabolism and virulence potential.
 
-Repository Structure:
+## Repository Structure:
 /data            → count, metadata, and gene name replacement files
   /Counts        → Folder containing count matrices (kept separate), within the data folder
 /script          → R scripts used for statistical analysis  
@@ -15,6 +15,10 @@ Raw sequencing reads are available on the European Nucleotide Archive:
 Project ID: PRJEB107700
 
 And RNAseq analysis performed with Tomas Demeter's pipeline: 
+
+## License
+- Code is licensed under MIT.
+- Data (in the /data directory) is licensed under CC BY 4.0.
 
 ################################################################################################################
 
