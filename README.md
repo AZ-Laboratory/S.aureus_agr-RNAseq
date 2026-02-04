@@ -13,6 +13,7 @@ Repository Structure:
 
 Raw sequencing reads are available on the European Nucleotide Archive:
 Project ID: PRJEB107700
+
 And RNAseq analysis performed with Tomas Demeter's pipeline: 
 
 ################################################################################################################
