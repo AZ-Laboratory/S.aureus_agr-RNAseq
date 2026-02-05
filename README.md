@@ -14,7 +14,7 @@ Pivard M., et al. (2026). Staphylococcus aureus agr-type vs genetic background: 
 Raw sequencing reads are available on the European Nucleotide Archive:
 Project ID: PRJEB107700
 
-And RNAseq analysis performed with Tomas Demeter's pipeline: 
+And RNAseq analysis performed with Tomas Demeter's pipeline: DOI: 10.5281/zenodo.18492655 - GitHub: https://github.com/AZ-Laboratory/Bacetrial-RNA-seq-Analysis-Pipeline
 
 ## License
 - Code is licensed under MIT.
