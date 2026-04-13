@@ -1,7 +1,7 @@
 ---
 title: "agr_RNAseq_analysis"
 author: "Mariane Pivard, Julian Baer"
-date: "2026-01-27"
+date: "2026-04-13"
 output: html_document
 ---
 ### 1.	Install and load necessary packages: 
@@ -24,6 +24,7 @@ library(clusterProfiler)
 library(enrichplot)
 library(pathviewr)
 library(RColorBrewer)
+library(ggbeeswarm)
 
 
 ```
@@ -196,7 +197,8 @@ message("DESeq2 object saved to file: ", dds_file_path)
 ### 5.  PCA analysis and data visualization
 
 Perform principal component analysis (PCA) on the variance-stabilized transformed counts to assess sample clustering and detect potential, batch effects or outliers. 
-Only the first two principal components (PC1 and PC2) are used for visualization, as they capture the largest sources of variance.
+First, only PC1 is used, as explaining most of the variance, in regard of the agr-type.
+Then, the first two principal components (PC1 and PC2) are used for visualization.
 
 ```{r, message = TRUE, warning = FALSE, results = "markup"}
 # Custom plot function for PCA plot
@@ -216,6 +218,39 @@ create_pca_plot <- function(pca_data, percentVar, title, shapes, fill_colors) {
     guides(fill = guide_legend(override.aes = list(shape = 22)))
 }
 
+create_plot_PC1only <- function(pca_data, percentVar, title, shapes, fill_colors) {
+  ggplot(pca_data, aes(y = PC1, x = Strain, fill = Strain, shape = Time, group = Strain)) +
+    geom_quasirandom(size = 5, color = "black") +
+    stat_summary(
+      fun.data = mean_sdl, fun.args = list(mult = 1),
+      geom = "errorbar",
+      position = position_dodge(width = 0.6),
+      width = 0.25, linewidth = 0.7, color = "black",
+      show.legend = F
+    ) +
+    stat_summary(
+      fun = mean,
+      geom = "point",
+      position = position_dodge(width = 0.6),
+      size = 3.5, stroke = 1, color = "black",
+      show.legend = F, fill = "black"
+    ) +
+
+    annotate("segment", x = -Inf, xend = Inf, y = 0, yend = 0, linewidth = 0.5) +
+    scale_fill_manual(values = fill_colors) +
+    scale_shape_manual(values = shapes) +
+    labs(
+      title = title,
+      y = paste0("PC1: ", percentVar[1], "% variance")
+    ) +
+    theme_poster() +
+    theme(
+      legend.position = "right",
+      legend.title = element_blank()
+    ) +
+    guides(fill = guide_legend(override.aes = list(shape = 22)))
+}
+
 # Perform PCA on all data
 message("Performing PCA for all data...")
 rld <- rlog(dds, blind = FALSE) # Regularized log transformation
@@ -224,9 +259,22 @@ levels(pca_data$Strain) <- gsub("^Dagr$", "\u0394agr", levels(pca_data$Strain)) 
 percentVar <- round(100 * attr(pca_data, "percentVar"))
 message("PCA variance explained for all data: PC1 = ", percentVar[1], "%, PC2 = ", percentVar[2], "%.")
 
+
 p <- create_pca_plot(pca_data, percentVar, "All data", c(21, 24, 22), c_strains)
+library(ggbeeswarm)
+ptstall <- create_plot_PC1only(pca_data, percentVar, "All data", c(21, 24, 22), c_strains)
+ptstall
 message("PCA plot for all data created. Displaying the plot below.")
 print(p) # This ensures the plot is visible in the output
+
+
+
+output_path <- file.path(outputdir, "PCA/PC1only_All_Time.png")
+ggsave(
+  filename = output_path, ptstall,
+  width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
+)
+message("PCA plot for all data saved at: ", output_path)
 
 output_path <- file.path(outputdir, "PCA/PCA_All_Time.png")
 ggsave(
@@ -252,7 +300,15 @@ run_and_save_pca <- function(rld_subset, timepoint, shape_id, fill_colors, outpu
     filename = output_path, p,
     width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
   )
-  cat("PCA plot for ", timepoint, " data saved at: ", output_path, "\n")
+  
+  pc1only <- create_plot_PC1only(pca_data, percentVar, title, shape_id, fill_colors)
+  output_path <- file.path(outputdir, paste0("PCA/PC1only_", timepoint, ".png"))
+  ggsave(
+    filename = output_path, pc1only,
+    width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
+  )
+  
+  cat("PC1 plot for ", timepoint, " data saved at: ", output_path, "\n")
 }
 
 # Perform PCA and save plots for individual timepoints
