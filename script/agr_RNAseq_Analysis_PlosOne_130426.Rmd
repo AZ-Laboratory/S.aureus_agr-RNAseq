@@ -218,8 +218,8 @@ create_pca_plot <- function(pca_data, percentVar, title, shapes, fill_colors) {
     guides(fill = guide_legend(override.aes = list(shape = 22)))
 }
 
-create_plot_PC1only <- function(pca_data, percentVar, title, shapes, fill_colors) {
-  ggplot(pca_data, aes(y = PC1, x = Strain, fill = Strain, shape = Time, group = Strain)) +
+create_plot_PC1only <- function(pca_data, percentVar, title, shapes, fill_colors, group_by = "Strain") {
+  ggplot(pca_data, aes(y = PC1, x = Strain, fill = Strain, shape = Time, group = .data[[group_by]])) +
     geom_quasirandom(size = 5, color = "black") +
     stat_summary(
       fun.data = mean_sdl, fun.args = list(mult = 1),
@@ -261,8 +261,7 @@ message("PCA variance explained for all data: PC1 = ", percentVar[1], "%, PC2 = 
 
 
 p <- create_pca_plot(pca_data, percentVar, "All data", c(21, 24, 22), c_strains)
-library(ggbeeswarm)
-ptstall <- create_plot_PC1only(pca_data, percentVar, "All data", c(21, 24, 22), c_strains)
+ptstall <- create_plot_PC1only(pca_data, percentVar, "All data", c(21, 24, 22), c_strains, group_by = "Time")
 ptstall
 message("PCA plot for all data created. Displaying the plot below.")
 print(p) # This ensures the plot is visible in the output
@@ -301,7 +300,7 @@ run_and_save_pca <- function(rld_subset, timepoint, shape_id, fill_colors, outpu
     width = 150, height = 110, units = "mm", scale = 1, dpi = 600, bg = "white"
   )
   
-  pc1only <- create_plot_PC1only(pca_data, percentVar, title, shape_id, fill_colors)
+  pc1only <- create_plot_PC1only(pca_data, percentVar, title, shape_id, fill_colors, group_by = "Strain")
   output_path <- file.path(outputdir, paste0("PCA/PC1only_", timepoint, ".png"))
   ggsave(
     filename = output_path, pc1only,
